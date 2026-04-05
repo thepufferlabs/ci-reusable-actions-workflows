@@ -178,7 +178,7 @@ jobs:
               product_id: $pid, content_key: .contentKey, title: .title,
               section: .section, access_level: .accessLevel,
               content_type: (.contentType // "doc"),
-              storage_path: (if .accessLevel == "free" then "free-content/" else "premium-content/" end) + $slug + "/" + .sourcePath,
+              storage_path: ((if .accessLevel == "free" then "free-content/" else "premium-content/" end) + $slug + "/" + .sourcePath),
               tags: (.tags // []), sort_order: (.order // 0), is_published: true
             }
           ]')
