@@ -7,7 +7,7 @@
 #   - course_details (Domain 5)
 #
 # Called by individual course repos:
-#   uses: senapatisantosh/reusable-github-workflows-actions/.github/workflows/sync-course-content.yml@main
+#   uses: thepufferlabs/ci-reusable-actions-workflows/.github/workflows/sync-course-content.yml@main
 # =============================================================================
 
 name: Sync Course Content
@@ -60,11 +60,16 @@ jobs:
             local file="$1" bucket="$2"
             local path="${SLUG}/${file}"
             local mime=$(file -b --mime-type "$file")
-            curl -s -X POST "${SUPABASE_URL}/storage/v1/object/${bucket}/${path}" \
+            local code
+            code=$(curl -s -X POST "${SUPABASE_URL}/storage/v1/object/${bucket}/${path}" \
               -H "Authorization: Bearer ${SUPABASE_KEY}" \
               -H "Content-Type: ${mime}" \
               -H "x-upsert: true" \
-              --data-binary @"$file" -o /dev/null -w "%{http_code}" | xargs -I{} echo "  {} $file"
+              --data-binary @"$file" -o /dev/null -w "%{http_code}")
+            echo "  ${code} $file"
+            if [ "$code" -ge 400 ]; then
+              echo "::warning::Upload failed (${code}): $file → ${bucket}"
+            fi
           }
 
           echo "=== Free docs ==="
@@ -87,11 +92,16 @@ jobs:
             local file="$1"
             local path="${SLUG}/${file}"
             local mime=$(file -b --mime-type "$file")
-            curl -s -X POST "${SUPABASE_URL}/storage/v1/object/premium-content/${path}" \
+            local code
+            code=$(curl -s -X POST "${SUPABASE_URL}/storage/v1/object/premium-content/${path}" \
               -H "Authorization: Bearer ${SUPABASE_KEY}" \
               -H "Content-Type: ${mime}" \
               -H "x-upsert: true" \
-              --data-binary @"$file" -o /dev/null -w "%{http_code}" | xargs -I{} echo "  {} $file"
+              --data-binary @"$file" -o /dev/null -w "%{http_code}")
+            echo "  ${code} $file"
+            if [ "$code" -ge 400 ]; then
+              echo "::warning::Upload failed (${code}): $file → premium-content"
+            fi
           }
 
           echo "=== Premium docs ==="
@@ -108,11 +118,15 @@ jobs:
           find assets -type f 2>/dev/null | while read f; do
             path="${SLUG}/${f}"
             mime=$(file -b --mime-type "$f")
-            curl -s -X POST "${SUPABASE_URL}/storage/v1/object/course-assets/${path}" \
+            code=$(curl -s -X POST "${SUPABASE_URL}/storage/v1/object/course-assets/${path}" \
               -H "Authorization: Bearer ${SUPABASE_KEY}" \
               -H "Content-Type: ${mime}" \
               -H "x-upsert: true" \
-              --data-binary @"$f" -o /dev/null -w "%{http_code}" | xargs -I{} echo "  {} $f"
+              --data-binary @"$f" -o /dev/null -w "%{http_code}")
+            echo "  ${code} $f"
+            if [ "$code" -ge 400 ]; then
+              echo "::warning::Upload failed (${code}): $f → course-assets"
+            fi
           done
 
       # ── Database sync ───────────────────────────────────
@@ -157,24 +171,42 @@ jobs:
               last_synced_at: (now | todate)
             }')
 
-          curl -sf -X POST "${SUPABASE_URL}/rest/v1/products" \
+          echo "::group::Product payload"
+          echo "$PAYLOAD" | jq .
+          echo "::endgroup::"
+
+          HTTP_CODE=$(curl -s -X POST "${SUPABASE_URL}/rest/v1/products?on_conflict=slug" \
             -H "apikey: ${SUPABASE_KEY}" \
             -H "Authorization: Bearer ${SUPABASE_KEY}" \
             -H "Content-Type: application/json" \
             -H "Prefer: resolution=merge-duplicates" \
-            -d "$PAYLOAD"
-          echo "✅  Product upserted"
+            -d "$PAYLOAD" -o /tmp/product_response.json -w "%{http_code}")
+
+          echo "HTTP ${HTTP_CODE}"
+          if [ "$HTTP_CODE" -ge 400 ]; then
+            echo "::error::Product upsert failed (${HTTP_CODE})"
+            cat /tmp/product_response.json
+            exit 1
+          fi
+          echo "Product upserted"
 
       - name: Sync content index (Domain 2)
         run: |
           CI="docs/shared/content-index.json"
-          [ -f "$CI" ] || exit 0
+          if [ ! -f "$CI" ]; then
+            echo "No content-index.json — skipping"
+            exit 0
+          fi
 
           PID=$(curl -sf "${SUPABASE_URL}/rest/v1/products?slug=eq.${SLUG}&select=id" \
             -H "apikey: ${SUPABASE_KEY}" \
             -H "Authorization: Bearer ${SUPABASE_KEY}" | jq -r '.[0].id')
 
-          [ "$PID" = "null" ] && echo "::error::Product not found" && exit 1
+          if [ "$PID" = "null" ] || [ -z "$PID" ]; then
+            echo "::error::Product not found for slug=${SLUG}"
+            exit 1
+          fi
+          echo "Product ID: $PID"
 
           ITEMS=$(jq 'if type == "array" then . else .items // [] end' "$CI")
 
@@ -183,25 +215,44 @@ jobs:
               product_id: $pid, content_key: .contentKey, title: .title,
               section: .section, access_level: .accessLevel,
               content_type: (.contentType // "doc"),
-              storage_path: (if .accessLevel == "free" then "free-content/" else "premium-content/" end) + $slug + "/" + .sourcePath,
+              storage_path: "\(if .accessLevel == "free" then "free-content" else "premium-content" end)/\($slug)/\(.sourcePath)",
               tags: (.tags // []), sort_order: (.order // 0), is_published: true
             }
           ]')
 
-          # Replace all content entries
-          curl -sf -X DELETE "${SUPABASE_URL}/rest/v1/product_content?product_id=eq.${PID}" \
-            -H "apikey: ${SUPABASE_KEY}" -H "Authorization: Bearer ${SUPABASE_KEY}"
+          echo "::group::Content payload ($(echo "$PAYLOAD" | jq length) items)"
+          echo "$PAYLOAD" | jq .
+          echo "::endgroup::"
 
-          curl -sf -X POST "${SUPABASE_URL}/rest/v1/product_content" \
+          # Delete existing entries
+          DEL_CODE=$(curl -s -X DELETE "${SUPABASE_URL}/rest/v1/product_content?product_id=eq.${PID}" \
             -H "apikey: ${SUPABASE_KEY}" -H "Authorization: Bearer ${SUPABASE_KEY}" \
-            -H "Content-Type: application/json" -d "$PAYLOAD"
+            -o /dev/null -w "%{http_code}")
+          echo "Delete old entries: HTTP ${DEL_CODE}"
 
-          echo "✅  $(echo "$PAYLOAD" | jq length) content entries synced"
+          # Insert new entries
+          INS_CODE=$(curl -s -X POST "${SUPABASE_URL}/rest/v1/product_content" \
+            -H "apikey: ${SUPABASE_KEY}" -H "Authorization: Bearer ${SUPABASE_KEY}" \
+            -H "Content-Type: application/json" \
+            -d "$PAYLOAD" -o /tmp/content_response.json -w "%{http_code}")
+
+          echo "Insert entries: HTTP ${INS_CODE}"
+          if [ "$INS_CODE" -ge 400 ]; then
+            echo "::error::Content index sync failed (${INS_CODE})"
+            cat /tmp/content_response.json
+            exit 1
+          fi
+          echo "$(echo "$PAYLOAD" | jq length) content entries synced"
 
       - name: Upsert course details (Domain 5)
         run: |
           PID=$(curl -sf "${SUPABASE_URL}/rest/v1/products?slug=eq.${SLUG}&select=id" \
             -H "apikey: ${SUPABASE_KEY}" -H "Authorization: Bearer ${SUPABASE_KEY}" | jq -r '.[0].id')
+
+          if [ "$PID" = "null" ] || [ -z "$PID" ]; then
+            echo "::error::Product not found for slug=${SLUG}"
+            exit 1
+          fi
 
           META=$(cat meta.json)
           SIDEBAR=$(cat docs/shared/sidebar.json 2>/dev/null || echo '{}')
@@ -230,12 +281,23 @@ jobs:
               last_content_update: (now | todate)
             }')
 
-          curl -sf -X POST "${SUPABASE_URL}/rest/v1/course_details" \
+          echo "::group::Course details payload"
+          echo "$PAYLOAD" | jq .
+          echo "::endgroup::"
+
+          HTTP_CODE=$(curl -s -X POST "${SUPABASE_URL}/rest/v1/course_details?on_conflict=product_id" \
             -H "apikey: ${SUPABASE_KEY}" -H "Authorization: Bearer ${SUPABASE_KEY}" \
             -H "Content-Type: application/json" \
             -H "Prefer: resolution=merge-duplicates" \
-            -d "$PAYLOAD"
-          echo "✅  Course details upserted"
+            -d "$PAYLOAD" -o /tmp/course_response.json -w "%{http_code}")
+
+          echo "HTTP ${HTTP_CODE}"
+          if [ "$HTTP_CODE" -ge 400 ]; then
+            echo "::error::Course details upsert failed (${HTTP_CODE})"
+            cat /tmp/course_response.json
+            exit 1
+          fi
+          echo "Course details upserted"
 
       - name: Summary
         run: |
