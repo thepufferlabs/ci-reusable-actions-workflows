@@ -152,7 +152,7 @@ jobs:
               last_synced_at: (now | todate)
             }')
 
-          curl -sf -X POST "${SUPABASE_URL}/rest/v1/products" \
+          curl -sSf -X POST "${SUPABASE_URL}/rest/v1/products" \
             -H "apikey: ${SUPABASE_KEY}" \
             -H "Authorization: Bearer ${SUPABASE_KEY}" \
             -H "Content-Type: application/json" \
@@ -165,7 +165,7 @@ jobs:
           CI="docs/shared/content-index.json"
           [ -f "$CI" ] || exit 0
 
-          PID=$(curl -sf "${SUPABASE_URL}/rest/v1/products?slug=eq.${SLUG}&select=id" \
+          PID=$(curl -sSf "${SUPABASE_URL}/rest/v1/products?slug=eq.${SLUG}&select=id" \
             -H "apikey: ${SUPABASE_KEY}" \
             -H "Authorization: Bearer ${SUPABASE_KEY}" | jq -r '.[0].id')
 
@@ -184,10 +184,10 @@ jobs:
           ]')
 
           # Replace all content entries
-          curl -sf -X DELETE "${SUPABASE_URL}/rest/v1/product_content?product_id=eq.${PID}" \
+          curl -sSf -X DELETE "${SUPABASE_URL}/rest/v1/product_content?product_id=eq.${PID}" \
             -H "apikey: ${SUPABASE_KEY}" -H "Authorization: Bearer ${SUPABASE_KEY}"
 
-          curl -sf -X POST "${SUPABASE_URL}/rest/v1/product_content" \
+          curl -sSf -X POST "${SUPABASE_URL}/rest/v1/product_content" \
             -H "apikey: ${SUPABASE_KEY}" -H "Authorization: Bearer ${SUPABASE_KEY}" \
             -H "Content-Type: application/json" -d "$PAYLOAD"
 
@@ -195,7 +195,7 @@ jobs:
 
       - name: Upsert course details (Domain 5)
         run: |
-          PID=$(curl -sf "${SUPABASE_URL}/rest/v1/products?slug=eq.${SLUG}&select=id" \
+          PID=$(curl -sSf "${SUPABASE_URL}/rest/v1/products?slug=eq.${SLUG}&select=id" \
             -H "apikey: ${SUPABASE_KEY}" -H "Authorization: Bearer ${SUPABASE_KEY}" | jq -r '.[0].id')
 
           META=$(cat meta.json)
@@ -225,7 +225,7 @@ jobs:
               last_content_update: (now | todate)
             }')
 
-          curl -sf -X POST "${SUPABASE_URL}/rest/v1/course_details" \
+          curl -sSf -X POST "${SUPABASE_URL}/rest/v1/course_details" \
             -H "apikey: ${SUPABASE_KEY}" -H "Authorization: Bearer ${SUPABASE_KEY}" \
             -H "Content-Type: application/json" \
             -H "Prefer: resolution=merge-duplicates" \
