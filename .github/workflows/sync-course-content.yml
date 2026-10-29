@@ -174,13 +174,14 @@ jobs:
           echo "::group::Product payload"
           echo "$PAYLOAD" | jq .
           echo "::endgroup::"
+          printf '%s' "$PAYLOAD" > /tmp/product_payload.json
 
           HTTP_CODE=$(curl -s -X POST "${SUPABASE_URL}/rest/v1/products?on_conflict=slug" \
             -H "apikey: ${SUPABASE_KEY}" \
             -H "Authorization: Bearer ${SUPABASE_KEY}" \
             -H "Content-Type: application/json" \
             -H "Prefer: resolution=merge-duplicates" \
-            -d "$PAYLOAD" -o /tmp/product_response.json -w "%{http_code}")
+            --data-binary "@/tmp/product_payload.json" -o /tmp/product_response.json -w "%{http_code}")
 
           echo "HTTP ${HTTP_CODE}"
           if [ "$HTTP_CODE" -ge 400 ]; then
@@ -230,11 +231,12 @@ jobs:
             -o /dev/null -w "%{http_code}")
           echo "Delete old entries: HTTP ${DEL_CODE}"
 
-          # Insert new entries
+          # Insert new entries (payload sent from a file: large courses exceed the 128 KB argument limit)
+          printf '%s' "$PAYLOAD" > /tmp/content_payload.json
           INS_CODE=$(curl -s -X POST "${SUPABASE_URL}/rest/v1/product_content" \
             -H "apikey: ${SUPABASE_KEY}" -H "Authorization: Bearer ${SUPABASE_KEY}" \
             -H "Content-Type: application/json" \
-            -d "$PAYLOAD" -o /tmp/content_response.json -w "%{http_code}")
+            --data-binary "@/tmp/content_payload.json" -o /tmp/content_response.json -w "%{http_code}")
 
           echo "Insert entries: HTTP ${INS_CODE}"
           if [ "$INS_CODE" -ge 400 ]; then
@@ -255,8 +257,8 @@ jobs:
           fi
 
           META=$(cat meta.json)
-          SIDEBAR=$(cat docs/shared/sidebar.json 2>/dev/null || echo '{}')
-          TOC=$(cat docs/shared/toc.json 2>/dev/null || echo '{}')
+          [ -f docs/shared/sidebar.json ] && cp docs/shared/sidebar.json /tmp/sidebar.json || echo '{}' > /tmp/sidebar.json
+          [ -f docs/shared/toc.json ] && cp docs/shared/toc.json /tmp/toc.json || echo '{}' > /tmp/toc.json
           BLOGS=$(echo "$META" | jq '(.publicBlogPaths | length) + (.premiumBlogPaths | length)')
           CODE=$(echo "$META" | jq '(.sampleCodePaths | length) + (.premiumCodePaths | length)')
           CHEAT=$(echo "$META" | jq '[.premiumDocPaths[] | select(contains("cheatsheet"))] | length')
@@ -266,15 +268,15 @@ jobs:
 
           PAYLOAD=$(jq -n \
             --arg pid "$PID" \
-            --argjson sidebar "$SIDEBAR" \
-            --argjson toc "$TOC" \
+            --slurpfile sidebar /tmp/sidebar.json \
+            --slurpfile toc /tmp/toc.json \
             --argjson blogs "$BLOGS" \
             --argjson code "$CODE" \
             --argjson cheat "$CHEAT" \
             --argjson interview "$INTERVIEW" \
             --arg hours "$HOURS" \
             '{
-              product_id: $pid, sidebar_data: $sidebar, toc_data: $toc,
+              product_id: $pid, sidebar_data: $sidebar[0], toc_data: $toc[0],
               blog_count: $blogs, code_sample_count: $code,
               cheatsheet_count: $cheat, has_interview_prep: $interview,
               estimated_hours: ($hours | tonumber),
@@ -284,12 +286,13 @@ jobs:
           echo "::group::Course details payload"
           echo "$PAYLOAD" | jq .
           echo "::endgroup::"
+          printf '%s' "$PAYLOAD" > /tmp/course_payload.json
 
           HTTP_CODE=$(curl -s -X POST "${SUPABASE_URL}/rest/v1/course_details?on_conflict=product_id" \
             -H "apikey: ${SUPABASE_KEY}" -H "Authorization: Bearer ${SUPABASE_KEY}" \
             -H "Content-Type: application/json" \
             -H "Prefer: resolution=merge-duplicates" \
-            -d "$PAYLOAD" -o /tmp/course_response.json -w "%{http_code}")
+            --data-binary "@/tmp/course_payload.json" -o /tmp/course_response.json -w "%{http_code}")
 
           echo "HTTP ${HTTP_CODE}"
           if [ "$HTTP_CODE" -ge 400 ]; then
